@@ -12,7 +12,7 @@ namespace logging
         /*
          * This class sends event logs asynchronously to avoid any delay to the application's flow.
          * The received logs are buffered if the channel is not fast enough.
-         * This is a thread safe class.
+         * This is a thread safe class of type: Multi-producers single consumer.
          */
         class AsynchronousSink : public Sink
         {
