@@ -1,5 +1,6 @@
 #include "logging/sinks/AsynchronousSink.h"
 
+#include <atomic>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -22,8 +23,8 @@ namespace logging
             std::mutex eventsMutex;
             std::condition_variable eventsQueueCond;
             std::thread workerThread;
-            bool isFlushNeeded{ false };
-            bool isShutDownRequested{ false };
+            std::atomic_bool isFlushNeeded{ false };
+            std::atomic_bool isShutDownRequested{ false };
 
             ~Impl();
             void processEvents();
@@ -31,11 +32,7 @@ namespace logging
 
         AsynchronousSink::Impl::~Impl()
         {
-            {
-                std::lock_guard lk(eventsMutex);
-                isShutDownRequested = true;
-            }
-
+            isShutDownRequested = true;
             eventsQueueCond.notify_one();
             
             if (workerThread.joinable())
@@ -55,6 +52,9 @@ namespace logging
             {
                 std::unique_lock<std::mutex> lk{ eventsMutex };
 
+                // Wait for changes in queue or flags
+                eventsQueueCond.wait(lk, [this]() { return !eventsQueue.empty() || isFlushNeeded || isShutDownRequested; });
+
                 while (!eventsQueue.empty())
                 {
                     const Event event = eventsQueue.front();
@@ -69,19 +69,17 @@ namespace logging
                 if (isFlushNeeded)
                 {
                     // Queue unlocked while flushing data
+                    // Meanwhile a producer thread may add logs to the queue and set isFlushNeeded = true 
+                    isFlushNeeded = false;
+                    
                     lk.unlock();
                     channel->flush();
-                    lk.lock();
-                    isFlushNeeded = false;
                 }
 
                 if (isShutDownRequested)
                 {
                     break;
                 }
-
-                // Wait for changes in queue or flags
-                eventsQueueCond.wait(lk);
             }
         }
 
@@ -97,7 +95,7 @@ namespace logging
 
         void AsynchronousSink::write(const Event& event)
         {
-            //TODO: maybe set a threshold for the size of this queue and 
+            //TODO: Set a threshold for the max size of this queue and 
             // keep an evidence of how many logs have been dropped
             {
                 std::lock_guard lk(m_pImpl->eventsMutex);
@@ -109,8 +107,6 @@ namespace logging
 
         void AsynchronousSink::flush()
         {
-            // No lock_guard here
-            // If the flag gets overwritten by worker thread, it means it doesn't need to flush anymore
             m_pImpl->isFlushNeeded = true;
             m_pImpl->eventsQueueCond.notify_one();
         }
